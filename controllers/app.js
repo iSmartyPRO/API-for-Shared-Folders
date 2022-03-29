@@ -1,11 +1,14 @@
 const logger = require('../helpers/logger')
-const {shares} = require('../config')
+const iconv = require('iconv-lite')
+const {shares, credential} = require('../config')
 
 const Shell = require('node-powershell');
 const ps = new Shell({
   executionPolicy: 'Bypass',
   noProfile: true
 });
+
+ps.addCommand(`[Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding("utf-8")`)
 
 // Информационная точка входа
 module.exports.home = (req, res) => {
@@ -23,9 +26,13 @@ module.exports.api = async (req, res, next) => {
     }
     let shareInConfig = false
 
+    // Шаблон сессии PowerShell
+    ps.addCommand(`$password = ConvertTo-SecureString '${credential.password}' -AsPlainText -Force`)
+    ps.addCommand(`$credential = New-Object System.Management.Automation.PSCredential ('${credential.username}', $password)`)
+
+
     // Проверка обязательных полей в запросе
     if( req.body.type ) {
-
         if(req.body.type === 'enable') {
         // Создание сетевой папки
             result.json.type = req.body.type
@@ -39,23 +46,26 @@ module.exports.api = async (req, res, next) => {
             if(shareInConfig){
                 try {
                     ps.addCommand(`$errorActionPreference = "SilentlyContinue"`)
-                    ps.addCommand(`Invoke-Command { Write-Host (Get-SmbShare -Name ${shareDetail.shareName} | measure).Count -NoNewline} -ComputerName ${shareDetail.computername}`)
+                    ps.addCommand(`$session = New-PSSession -ComputerName ${shareDetail.computername} -Credential $credential`)
+                    ps.addCommand(`Invoke-Command -ScriptBlock { Write-Host (Get-SmbShare -Name ${shareDetail.shareName} | measure).Count -NoNewline} -Session $session`)
                     const isShareExist = await ps.invoke()
                     if(isShareExist === "1"){
                         result.status = 409
                         result.json.message = "Share already exist"
                     } else {
-                        ps.addCommand(`Invoke-Command {New-SmbShare -Name "${shareDetail.shareName}" -Path "${shareDetail.path}" -Description "${shareDetail.description}" -FullAccess "${shareDetail.FullAccess}" | select Name, Path, Description | ConvertTo-Json} -ComputerName ${shareDetail.computername}`)
+                        ps.addCommand(`$errorActionPreference = "Continue"`)
+                        ps.addCommand(`Invoke-Command -ScriptBlock { New-SmbShare -Name "${shareDetail.shareName}" -Path "${shareDetail.path}" -Description "${shareDetail.description}" -FullAccess ${shareDetail.FullAccess} | select Name, Path, Description | ConvertTo-Json } -Session $session`)
                         try {
-                            const newShare = await ps.invoke()
-                            console.log(newShare)
+                            const newShare = JSON.parse(await ps.invoke())
+                            logger.info(newShare)
                             result.status = 201
-                            result.json = JSON.parse(newShare)
+                            result.json.type = req.body.type
+                            result.json.message = 'Created'
+                            result.json.data = newShare
                         } catch (err) {
                             logger.error(err)
-                            result.json.message = "Failed. More details on server.1"
+                            result.json.message = "Failed. More details on server."
                         }
-
                     }
                 } catch (err) {
                     logger.error(err)
@@ -79,13 +89,15 @@ module.exports.api = async (req, res, next) => {
             if(shareInConfig){
                 try {
                     ps.addCommand(`$errorActionPreference = "SilentlyContinue"`)
-                    ps.addCommand(`Invoke-Command { Write-Host (Get-SmbShare -Name ${shareDetail.shareName} | measure).Count -NoNewline} -ComputerName ${shareDetail.computername}`)
+                    ps.addCommand(`$session = New-PSSession -ComputerName ${shareDetail.computername} -Credential $credential`)
+                    ps.addCommand(`Invoke-Command -ScriptBlock { Write-Host (Get-SmbShare -Name ${shareDetail.shareName} | measure).Count -NoNewline} -Session $session`)
                     const isShareExist = await ps.invoke()
                     if(isShareExist === "0"){
                         result.status = 404
                         result.json.message = `Sharename "${shareDetail.shareName}" not found`
                     } else {
-                        ps.addCommand(`Invoke-Command {Remove-SmbShare -Name "${shareDetail.shareName}" -Force -Confirm:$false } -ComputerName ${shareDetail.computername}`)
+                        logger.info(`Invoke-Command -ScriptBlock {Remove-SmbShare -Name "${shareDetail.shareName}" -Force -Confirm:$false } -Session $session`)
+                        ps.addCommand(`Invoke-Command -ScriptBlock {Remove-SmbShare -Name "${shareDetail.shareName}" -Force -Confirm:$false } -Session $session`)
                         try {
                             await ps.invoke()
                             result.status = 200
@@ -109,7 +121,7 @@ module.exports.api = async (req, res, next) => {
             if(req.body.computername){
                 // Отобразить список сетевых папок
                 result.json.type=req.body.type
-                ps.addCommand(`Invoke-Command {Get-SmbShare | select Name, Path, Description } -ComputerName ${req.body.computername} | ConvertTo-Json`)
+                ps.addCommand(`Invoke-Command -ScriptBlock { Get-SmbShare | select Name, Path, Description } -Session $session | ConvertTo-Json`)
                 try {
                     const list = await ps.invoke()
                     result.status = 200
@@ -134,6 +146,13 @@ module.exports.api = async (req, res, next) => {
         logger.info(`API Key: ${req.apiName}, User: ${req.headers['user']}, Status: ${result.status}, JSON: ${JSON.stringify(result.json)}`)
     } else {
         logger.error(`API Key: ${req.apiName}, User: ${req.headers['user']}, Status: ${result.status}, JSON: ${JSON.stringify(result.json)}`)
+    }
+    ps.addCommand("Remove-PSSession $session")
+    try {
+        await ps.invoke()
+        logger.info("PSSession is removed")
+    } catch (err) {
+        logger.error("Error during removing PSSession")
     }
     res.status(result.status).json(result.json)
 }

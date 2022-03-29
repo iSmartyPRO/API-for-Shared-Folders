@@ -7,7 +7,7 @@ var svc = new Service({
   script: path.join(__dirname, '../index.js'),
   nodeOptions: [
     '--harmony',
-    '--max_old_space_size=4096'
+    '--max_old_space_size=8192'
   ]
 });
 
