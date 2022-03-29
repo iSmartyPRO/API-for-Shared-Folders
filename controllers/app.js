@@ -1,5 +1,4 @@
 const logger = require('../helpers/logger')
-const iconv = require('iconv-lite')
 const {shares, credential} = require('../config')
 
 const Shell = require('node-powershell');
