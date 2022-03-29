@@ -120,6 +120,7 @@ module.exports.api = async (req, res, next) => {
             if(req.body.computername){
                 // Отобразить список сетевых папок
                 result.json.type=req.body.type
+                ps.addCommand(`$session = New-PSSession -ComputerName ${req.body.computername} -Credential $credential`)
                 ps.addCommand(`Invoke-Command -ScriptBlock { Get-SmbShare | select Name, Path, Description } -Session $session | ConvertTo-Json`)
                 try {
                     const list = await ps.invoke()
